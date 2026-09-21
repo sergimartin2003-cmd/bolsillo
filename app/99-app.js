@@ -574,7 +574,7 @@ function parseQuick(input){
     else R.cat=okCat(want==='income'?'c_otrosi':'c_otros')||null;
   }
 
-  // beneficiario
+  // concepto
   const chars=[];
   if(same){for(let i=0;i<t.length;i++)if(!used[i])chars.push(t[i])}else chars.push(n);
   let parts=chars.join('').replace(/[\s,;:]+/g,' ').trim().split(' ').filter(Boolean);
@@ -929,6 +929,11 @@ function openTxForm(orig,defs,mode){
       h('div',{class:'bigamt'},amtEl,curSel)
     ];
     const g1=h('div',{class:'grp'});
+    const dlP=h('datalist',{id:'dl-payees'},allPayees().map(p=>h('option',{value:p})));
+    const pIn=h('input',{type:'text',placeholder:isT?(F.type==='invest'?'Ej. Aportación mensual':'Ej. Ahorro del mes'):(F.type==='income'?'Ej. Nómina':'Ej. Mercadona'),value:F.payee,list:'dl-payees',
+      onInput:e=>{F.payee=e.target.value},
+      onChange:e=>{const k=memoryKey(e.target.value);if(!isT&&!F.cat&&k&&S.memory[k]&&cat(S.memory[k]).type===F.type){F.cat=S.memory[k];draw()}}});
+    g1.append(fieldRow('Concepto',pIn,'left'),dlP);
     if(isT){
       g1.append(tapRow('Desde',h('span',null,A?A.icon+' '+A.name:'Elegir'),()=>pickAccount({title:'Cuenta de origen',value:F.acc,exclude:F.acc2,onlyTypes:F.type==='invest'?ACCT_GROUPS.filter(g=>g.key!=='invest'&&g.key!=='loan').flatMap(g=>g.types):null,onPick:id=>{F.acc=id;draw()}})));
       g1.append(tapRow(F.type==='invest'?'Inversión':'Hacia',h('span',null,B?B.icon+' '+B.name:'Elegir'),()=>pickAccount({title:'Cuenta de destino',value:F.acc2,exclude:F.acc,onlyTypes:F.type==='invest'?['invest']:null,onPick:id=>{F.acc2=id;draw()}})));
@@ -976,9 +981,6 @@ function openTxForm(orig,defs,mode){
     if(mode==='tx'&&!isEdit){nodes.push(h('div',{class:'chips'},[['Hoy',todayISO()],['Ayer',addDays(todayISO(),-1)],['Anteayer',addDays(todayISO(),-2)]].map(p=>h('button',{class:'chip'+(F.date===p[1]?' on':''),onClick:()=>{F.date=p[1];draw()}},p[0]))))}
     const g2=h('div',{class:'grp'});
     if(!isT){
-      const dl=h('datalist',{id:'dl-payees'},allPayees().map(p=>h('option',{value:p})));
-      const pIn=h('input',{type:'text',placeholder:'Opcional',value:F.payee,list:'dl-payees',onInput:e=>{F.payee=e.target.value},onChange:e=>{const k=memoryKey(e.target.value);if(!F.cat&&k&&S.memory[k]&&cat(S.memory[k]).type===F.type){F.cat=S.memory[k];draw()}}});
-      g2.append(fieldRow(F.type==='income'?'Pagador':'Beneficiario',pIn),dl);
       g2.append(fieldRow('Etiquetas',h('input',{type:'text',placeholder:'viaje, trabajo',value:F.tags,onInput:e=>{F.tags=e.target.value}})));
     }
     g2.append(fieldRow('Nota',h('input',{type:'text',placeholder:'Opcional',value:F.note,onInput:e=>{F.note=e.target.value}})));
@@ -1109,7 +1111,7 @@ function openQuickEntry(prefill){
         list.push(chip('Origen',A?A.icon+' '+A.name:'Elegir',R.found.acc||ov.acc?'ok':'miss',()=>pickAccount({title:'Cuenta de origen',value:P.acc,exclude:P.acc2,onPick:id=>{ov.acc=id;update()}})));
         list.push(chip('Destino',B?B.icon+' '+B.name:'Elegir',P.acc2?'ok':'miss',()=>pickAccount({title:'Cuenta de destino',value:P.acc2,exclude:P.acc,onPick:id=>{ov.acc2=id;update()}})));
       }
-      if(P.payee)list.push(chip(P.type==='income'?'Pagador':'Beneficiario',P.payee,'ok'));
+      if(P.payee)list.push(chip('Concepto',P.payee,'ok'));
       if(P.tags&&P.tags.length)list.push(chip('Etiquetas',P.tags.map(x=>'#'+x).join(' '),'ok'));
       if(P.recur)list.push(chip('Repetir','🔁 '+FREQ[P.recur.freq],'ok'));
       chipsBox.replaceChildren(...list);
@@ -1668,9 +1670,11 @@ function txRow(t,o){
   const isInv=isT&&B&&B.type==='invest';
   const isSplit=!isT&&Array.isArray(t.splits)&&t.splits.length>0;
   const splitLabel=isSplit?t.splits.map(s=>cat(s.cat).name).join(', '):'';
-  const title=isInv?'Aportación a «'+B.name+'»':isT?'Transferencia':(t.payee||t.note||(isSplit?'Varias categorías':C.name));
+  const base=isInv?'Aportación a «'+B.name+'»':isT?'Transferencia':(t.note||(isSplit?'Varias categorías':C.name));
+  const title=t.payee||base;
   const bits=[];
   if(!isT){if(isSplit)bits.push(splitLabel);else if(t.payee||t.note)bits.push(C.name)}
+  else if(t.payee)bits.push(base);
   if(isT)bits.push((A?A.name:'?')+' → '+(B?B.name:'?'));else if(A&&!o.hideAcc)bits.push(A.name);
   if(t.pending)bits.push('Pendiente');if(t.excluded)bits.push('Excluido');if(t.recId)bits.push('🔁');if(t.photo)bits.push('📎');
   const conv2=t.cur!==main()&&!isT?'≈ '+money(txMain(t)):'';
@@ -1832,7 +1836,7 @@ VIEWS.movs=function(){
     h('button',{class:'ibtn'+(UI.selMode?' on':''),'aria-label':'Seleccionar',onClick:()=>{UI.selMode=!UI.selMode;UI.sel.clear();renderView()}},icon('check',20)),
     h('button',{class:'ibtn'+(n?' on':''),'aria-label':'Filtros',onClick:openFilters},icon('filter',20))];
   box.append(header('Movimientos',null,tools));
-  const inp=h('input',{type:'search',placeholder:'Buscar por beneficiario, nota, categoría…',value:UI.q,'aria-label':'Buscar'});
+  const inp=h('input',{type:'search',placeholder:'Buscar por concepto, nota, categoría…',value:UI.q,'aria-label':'Buscar'});
   box.append(h('div',{class:'searchbox'},icon('search',18),inp));
   const calEl=h('div'),sumEl=h('div',{class:'split3'}),listEl=h('div');
   if(isCal)box.append(calEl);
@@ -1922,7 +1926,7 @@ function openTxDetail(id){
       g.append(line('Cuenta',A?A.icon+' '+A.name:'—'));
     }
     else{g.append(line('Desde',A?A.icon+' '+A.name:'—'));g.append(line('Hacia',B?B.icon+' '+B.name:'—'));if(t.amount2!=null&&B)g.append(line('Recibe',money(t.amount2,B.currency)))}
-    g.append(line(t.type==='income'?'Pagador':'Beneficiario',t.payee));
+    g.append(line('Concepto',t.payee));
     g.append(line('Etiquetas',(t.tags||[]).map(x=>'#'+x).join(' ')));
     g.append(line('Nota',t.note));
     if(t.cur!==main()&&!isT)g.append(line('En '+main(),'≈ '+money(txMain(t))));
@@ -1984,7 +1988,7 @@ function openShortcutForm(s,defs,onSaved){
       const B=F.acc2?acc(F.acc2):null;
       g3.append(tapRow('Hacia',B?B.icon+' '+B.name:'Elegir cuenta',()=>pickAccount({title:'Cuenta de destino',value:F.acc2,exclude:F.acc,onPick:id=>{F.acc2=id;draw()}})));
     }
-    g3.append(fieldRow(F.type==='income'?'Pagador (opcional)':'Beneficiario (opcional)',h('input',{type:'text',placeholder:'Ej. Bar de la esquina',value:F.payee,onInput:e=>{F.payee=e.target.value}})));
+    g3.append(fieldRow('Concepto (opcional)',h('input',{type:'text',placeholder:'Ej. Bar de la esquina',value:F.payee,onInput:e=>{F.payee=e.target.value}}),'left'));
     const nodes=[g,g2,g3,h('div',{class:'pad'},h('button',{class:'btn',onClick:doSave},'Guardar'),
       isEdit?h('div',{class:'btnrow'},h('button',{class:'btn danger',onClick:doDelete},'Eliminar')):null)];
     root.replaceChildren(...nodes);
@@ -2272,7 +2276,7 @@ function billsSection(){
 }
 
 /* ================= INFORMES ================= */
-const REPORTS=[['flow','Ingresos vs gastos'],['cats','Categorías'],['payees','Beneficiarios'],['tags','Etiquetas'],['nw','Patrimonio'],['proj','Proyección anual'],['fixed','Gastos fijos']];
+const REPORTS=[['flow','Ingresos vs gastos'],['cats','Categorías'],['payees','Conceptos'],['tags','Etiquetas'],['nw','Patrimonio'],['proj','Proyección anual'],['fixed','Gastos fijos']];
 const RANGES=[['period','Este periodo'],['30d','30 días'],['3m','3 meses'],['6m','6 meses'],['year','Este año'],['all','Todo'],['custom','Personalizado']];
 function repRange(){return UI.range==='custom'&&UI.from&&UI.to?{from:UI.from,to:UI.to}:rangeFor(UI.range==='custom'?'6m':UI.range)}
 VIEWS.informes=function(){
@@ -2331,12 +2335,12 @@ function openCatDrill(rootId,r){
 function repGroup(kind){
   const r=repRange(),box=h('div');box.append(typeSeg());
   const rows=(kind==='payees'?totalsBy(r.from,r.to,UI.repType,t=>t.payee?[t.payee]:[],UI.repAccs):totalsBy(r.from,r.to,UI.repType,t=>t.tags||[],UI.repAccs)).slice(0,40);
-  if(!rows.length)return h('div',null,box,h('div',{class:'grp'},emptyBox('Sin datos',kind==='payees'?'Añade beneficiarios a tus movimientos para verlos aquí.':'Añade etiquetas (#viaje) a tus movimientos para verlas aquí.')));
+  if(!rows.length)return h('div',null,box,h('div',{class:'grp'},emptyBox('Sin datos',kind==='payees'?'Pon un concepto a tus movimientos para verlos agrupados aquí.':'Añade etiquetas (#viaje) a tus movimientos para verlas aquí.')));
   const mx=rows[0].value;
   box.append(h('div',{class:'grp'},rows.map(x=>h('button',{class:'row',onClick:()=>{UI.filt=Object.assign({types:[],accs:[],cats:[],pending:false,tag:'',from:r.from,to:r.to});if(kind==='tags')UI.filt.tag=x.key;else UI.q=x.key;UI.tab='movs';renderView();window.scrollTo(0,0)}},
     h('span',{class:'tile',style:{background:'var(--accent-soft)',color:'var(--accent)'}},kind==='tags'?'#':'👤'),
     h('div',{class:'grow'},h('div',{class:'t'},x.key),h('div',{class:'bar',style:{marginTop:'5px',height:'5px'}},h('i',{style:{width:Math.round(x.value/mx*100)+'%'}}))),h('div',{class:'amt'},money(x.value))))));
-  box.append(exportBtn(kind==='payees'?'beneficiarios':'etiquetas',[kind==='payees'?'Beneficiario':'Etiqueta','Importe'],rows.map(x=>[x.key,r2(x.value)])));
+  box.append(exportBtn(kind==='payees'?'conceptos':'etiquetas',[kind==='payees'?'Concepto':'Etiqueta','Importe'],rows.map(x=>[x.key,r2(x.value)])));
   return box;
 }
 function repNW(){
@@ -2468,7 +2472,7 @@ function readFileText(accept){
 
 /* ---------- exportar ---------- */
 function exportTxCSV(){
-  const rows=[['Fecha','Tipo','Importe','Moneda','Cuenta','Cuenta destino','Categoría','Beneficiario','Etiquetas','Nota','Pendiente']];
+  const rows=[['Fecha','Tipo','Importe','Moneda','Cuenta','Cuenta destino','Categoría','Concepto','Etiquetas','Nota','Pendiente']];
   for(const t of filterTx({all:true})){
     const isT=t.type==='transfer',sign=t.type==='expense'?-1:1;
     if(!isT&&Array.isArray(t.splits)&&t.splits.length){
@@ -2516,7 +2520,7 @@ async function resetAll(){
 }
 
 /* ---------- importar CSV ---------- */
-const CSV_FIELDS=[['date','Fecha'],['amount','Importe'],['debit','Cargo (gasto)'],['credit','Abono (ingreso)'],['type','Tipo'],['payee','Concepto / beneficiario'],['cat','Categoría'],['acc','Cuenta'],['acc2','Cuenta destino'],['cur','Moneda'],['tags','Etiquetas'],['note','Nota']];
+const CSV_FIELDS=[['date','Fecha'],['amount','Importe'],['debit','Cargo (gasto)'],['credit','Abono (ingreso)'],['type','Tipo'],['payee','Concepto'],['cat','Categoría'],['acc','Cuenta'],['acc2','Cuenta destino'],['cur','Moneda'],['tags','Etiquetas'],['note','Nota']];
 const CSV_GUESS=[['acc2',/destino|transfer.*to|to.?account/],['date',/^(fecha|date|dia|day|f\.? ?oper|f\.? ?valor)/],['debit',/^(cargo|debe|debit|salida|retiro|gasto)s?$/],['credit',/^(abono|haber|credit|entrada|deposito|ingreso)s?$/],['amount',/importe|amount|cantidad|monto|valor|total|quantity/],['type',/^(tipo|type)/],['cat',/categ/],['acc',/cuenta|account|banco|wallet|monedero/],['cur',/moneda|divisa|currency/],['tags',/etiq|tag/],['note',/^(nota|notas|note|notes|comentario|observ)/],['payee',/concepto|descrip|benefic|payee|comercio|detalle|movimiento|merchant|titulo/]];
 function csvAutoMap(header){
   const m={},used=new Set();
