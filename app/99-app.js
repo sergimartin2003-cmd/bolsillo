@@ -662,29 +662,66 @@ function isLight(hex){const m=/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(h
 
 /* ================= hojas modales ================= */
 const OPEN=[];
+/* El boton "atras" del movil cierra la hoja abierta en vez de salir de la app.
+   histDepth = entradas que hemos metido nosotros; skipPop = vueltas de history.back() propias. */
+let histDepth=0,skipPop=0;
+const HIST=(()=>{try{return !!(window.history&&history.pushState)}catch(e){return false}})();
 function openSheet(o){
   const back=h('div',{class:'sheet-back',role:'dialog','aria-modal':'true'});
   const body=h('div',{class:'sheet-body'});
   const titleEl=h('div',{class:'sheet-title'},o.title||'');
-  let closed=false;
-  const api={body,el:back,setTitle:t=>{titleEl.textContent=t},close,refresh,form:!!o.form};
+  let closed=false,mine=false;
+  const api={body,el:back,setTitle:t=>{titleEl.textContent=t},close:()=>close(),refresh,form:!!o.form,_pop:()=>close(true)};
   function refresh(){if(closed)return;const st=body.scrollTop;body.replaceChildren(o.build(api));body.scrollTop=st}
-  function close(){
+  function close(fromPop){
     if(closed)return;closed=true;const i=OPEN.indexOf(api);if(i>-1)OPEN.splice(i,1);
     back.classList.remove('in');setTimeout(()=>back.remove(),220);
     if(!OPEN.length)document.body.style.overflow='';
+    if(mine&&histDepth>0){histDepth--;if(!fromPop){skipPop++;try{history.back()}catch(e){skipPop--}}}
     if(o.onClose)o.onClose();
   }
-  const left=h('button',{class:'ibtn',onClick:close,'aria-label':'Cerrar'},icon(o.back?'back':'close',20));
-  const actions=h('div',{class:'sheet-actions'},o.actions?o.actions(api):h('span',{style:{width:'38px'}}));
-  back.append(h('div',{class:'sheet'+(o.full?' full':'')},h('div',{class:'sheet-head'},left,titleEl,actions),body));
+  const left=h('button',{class:'ibtn',onClick:()=>close(),'aria-label':'Cerrar'},icon(o.back?'back':'close',20));
+  const actions=h('div',{class:'sheet-actions'},o.actions?o.actions(api):h('span',{style:{width:'42px'}}));
+  const grab=h('div',{class:'sheet-grab','aria-hidden':'true'});
+  const head=h('div',{class:'sheet-head'},left,titleEl,actions);
+  const sheetEl=h('div',{class:'sheet'+(o.full?' full':'')},grab,head,body);
+  back.append(sheetEl);
   back.addEventListener('click',e=>{if(e.target===back)close()});
+  /* arrastrar hacia abajo para cerrar: desde la cabecera, o desde el contenido si ya esta arriba del todo */
+  let y0=0,dy=0,drag=false;
+  sheetEl.addEventListener('touchstart',e=>{
+    if(e.touches.length!==1||closed)return;
+    const t=e.target,inHead=head.contains(t)||t===grab;
+    if(!inHead&&!(body.contains(t)&&body.scrollTop<=0))return;
+    if(!inHead&&t.closest('input,textarea,select,button,.sw,.chips,.hints,.scrollx'))return;
+    y0=e.touches[0].clientY;dy=0;drag=true;sheetEl.style.transition='none';
+  },{passive:true});
+  sheetEl.addEventListener('touchmove',e=>{
+    if(!drag)return;
+    dy=e.touches[0].clientY-y0;
+    if(dy<=0){dy=0;sheetEl.style.transform='';back.style.opacity='';return}
+    sheetEl.style.transform='translateY('+dy+'px)';
+    back.style.opacity=String(Math.max(.15,1-dy/480));
+  },{passive:true});
+  const endDrag=()=>{
+    if(!drag)return;drag=false;
+    sheetEl.style.transition='';back.style.opacity='';
+    if(dy>110){sheetEl.style.transform='';close()}else{sheetEl.style.transform=''}
+    dy=0;
+  };
+  sheetEl.addEventListener('touchend',endDrag,{passive:true});
+  sheetEl.addEventListener('touchcancel',endDrag,{passive:true});
   body.replaceChildren(o.build(api));
   document.body.append(back);document.body.style.overflow='hidden';
   OPEN.push(api);requestAnimationFrame(()=>requestAnimationFrame(()=>back.classList.add('in')));
+  if(HIST){try{history.pushState({bolsilloSheet:++histDepth},'');mine=true}catch(e){histDepth--}}
   if(o.focus){setTimeout(()=>{const el=body.querySelector(o.focus);if(el)el.focus()},260)}
   return api;
 }
+window.addEventListener('popstate',()=>{
+  if(skipPop>0){skipPop--;return}
+  if(OPEN.length)OPEN[OPEN.length-1]._pop();
+});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&OPEN.length&&!$('.lock'))OPEN[OPEN.length-1].close()});
 function closeAllSheets(){while(OPEN.length)OPEN[OPEN.length-1].close()}
 let toastT=null;
