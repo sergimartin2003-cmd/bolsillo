@@ -663,21 +663,29 @@ function isLight(hex){const m=/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(h
 /* ================= hojas modales ================= */
 const OPEN=[];
 /* El boton "atras" del movil cierra la hoja abierta en vez de salir de la app.
-   histDepth = entradas que hemos metido nosotros; skipPop = vueltas de history.back() propias. */
-let histDepth=0,skipPop=0;
+   Metemos como mucho UNA entrada en el historial mientras haya hojas abiertas:
+   marker = esa entrada existe; pending = un history.back() nuestro en camino.
+   Mientras hay uno en camino no tocamos el historial, para no adelantarnos a el
+   y acabar saliendo de la app. */
+let marker=false,pending=0;
 const HIST=(()=>{try{return !!(window.history&&history.pushState)}catch(e){return false}})();
+function syncHist(){
+  if(!HIST||pending>0)return;
+  if(OPEN.length&&!marker){try{history.pushState({bolsilloSheet:1},'');marker=true}catch(e){}}
+  else if(!OPEN.length&&marker){marker=false;pending++;try{history.back()}catch(e){pending--}}
+}
 function openSheet(o){
   const back=h('div',{class:'sheet-back',role:'dialog','aria-modal':'true'});
   const body=h('div',{class:'sheet-body'});
   const titleEl=h('div',{class:'sheet-title'},o.title||'');
-  let closed=false,mine=false;
+  let closed=false;
   const api={body,el:back,setTitle:t=>{titleEl.textContent=t},close:()=>close(),refresh,form:!!o.form,_pop:()=>close(true)};
   function refresh(){if(closed)return;const st=body.scrollTop;body.replaceChildren(o.build(api));body.scrollTop=st}
   function close(fromPop){
     if(closed)return;closed=true;const i=OPEN.indexOf(api);if(i>-1)OPEN.splice(i,1);
     back.classList.remove('in');setTimeout(()=>back.remove(),220);
     if(!OPEN.length)document.body.style.overflow='';
-    if(mine&&histDepth>0){histDepth--;if(!fromPop){skipPop++;try{history.back()}catch(e){skipPop--}}}
+    if(!fromPop)syncHist();
     if(o.onClose)o.onClose();
   }
   const left=h('button',{class:'ibtn',onClick:()=>close(),'aria-label':'Cerrar'},icon(o.back?'back':'close',20));
@@ -714,13 +722,15 @@ function openSheet(o){
   body.replaceChildren(o.build(api));
   document.body.append(back);document.body.style.overflow='hidden';
   OPEN.push(api);requestAnimationFrame(()=>requestAnimationFrame(()=>back.classList.add('in')));
-  if(HIST){try{history.pushState({bolsilloSheet:++histDepth},'');mine=true}catch(e){histDepth--}}
+  syncHist();
   if(o.focus){setTimeout(()=>{const el=body.querySelector(o.focus);if(el)el.focus()},260)}
   return api;
 }
 window.addEventListener('popstate',()=>{
-  if(skipPop>0){skipPop--;return}
+  if(pending>0){pending--;syncHist();return}
+  marker=false;
   if(OPEN.length)OPEN[OPEN.length-1]._pop();
+  syncHist();
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&OPEN.length&&!$('.lock'))OPEN[OPEN.length-1].close()});
 function closeAllSheets(){while(OPEN.length)OPEN[OPEN.length-1].close()}
@@ -1746,6 +1756,8 @@ VIEWS.resumen=function(){
         h('div',{class:'muted small',style:{marginTop:'6px'}},'Hoy has gastado '+money(dl.today))));
     }
   }
+  // dinero ahorrado
+  box.append(savingsCard());
   // presupuestos
   if(S.budgets.length){
     box.append(secTitle('Presupuestos','Ver todos',()=>go('presu')));
@@ -1778,6 +1790,125 @@ VIEWS.resumen=function(){
   if(rec.length){box.append(secTitle('Últimos movimientos','Ver todos',()=>go('movs')));box.append(h('div',{class:'grp'},rec.map(t=>txRow(t))))}
   return box;
 };
+/* ================= DINERO AHORRADO =================
+   Se apoya en las cuentas de tipo "Ahorro": lo que ahorras es una transferencia
+   hacia una de ellas y lo que sacas, una transferencia de vuelta. Así el saldo
+   de las cuentas y el patrimonio siguen cuadrando solos. */
+const savingsAccounts=()=>activeAccounts().filter(a=>a.type==='savings');
+function savingsTotal(){const b=balances();return savingsAccounts().reduce((s,a)=>s+conv(b[a.id]||0,a.currency,main()),0)}
+/* Efecto de un movimiento sobre el ahorro, en moneda principal (+ entra, − sale) */
+function savingsDelta(t,ids){
+  let v=0;const A=acc(t.acc),B=acc(t.acc2);
+  if(t.type==='transfer'){
+    if(A&&ids.has(t.acc))v-=conv(t.amount,t.cur,main());
+    if(B&&ids.has(t.acc2))v+=t.amount2!=null?conv(t.amount2,B.currency,main()):conv(t.amount,t.cur,main());
+  }else if(A&&ids.has(t.acc))v+=(t.type==='income'?1:-1)*conv(t.amount,t.cur,main());
+  return v;
+}
+function savingsMoves(o){
+  o=o||{};const ids=new Set(savingsAccounts().map(a=>a.id));
+  if(!ids.size)return[];
+  const today=todayISO(),out=[];
+  for(const t of S.tx){
+    if(!S.settings.showFuture&&t.date>today)continue;
+    if(o.from&&t.date<o.from)continue;
+    if(o.to&&t.date>o.to)continue;
+    const v=savingsDelta(t,ids);
+    if(v)out.push({t,v});
+  }
+  out.sort((a,b)=>a.t.date<b.t.date?1:a.t.date>b.t.date?-1:(b.t.ts||0)-(a.t.ts||0));
+  return out;
+}
+const savingsNet=(from,to)=>savingsMoves({from,to}).reduce((s,x)=>s+x.v,0);
+function needSavingsAccount(){
+  return new Promise(async res=>{
+    if(savingsAccounts().length)return res(true);
+    if(!(await confirmBox('Aún no tienes hucha','Creo una cuenta «Ahorro» y ahí se irá guardando lo que apartes.','Crear hucha')))return res(false);
+    S.accounts.push({id:uid(),name:'Ahorro',type:'savings',currency:main(),initial:0,icon:'🐖',color:'#0F8A5C'});
+    commit();res(true);
+  });
+}
+async function addToSavings(){
+  if(!(await needSavingsAccount()))return;
+  const sav=savingsAccounts(),from=activeAccounts().filter(a=>a.type!=='savings'&&a.type!=='loan')[0]||defaultAcc();
+  openTxForm(null,{type:'transfer',acc:from?from.id:'',acc2:sav[0].id,payee:'Ahorro de '+MONTHS[parseISO(todayISO()).getMonth()],cur:from?from.currency:main()});
+}
+async function takeFromSavings(){
+  if(!(await needSavingsAccount()))return;
+  const sav=savingsAccounts(),to=activeAccounts().filter(a=>a.type!=='savings'&&a.type!=='loan')[0]||defaultAcc();
+  openTxForm(null,{type:'transfer',acc:sav[0].id,acc2:to?to.id:'',payee:'',cur:sav[0].currency});
+}
+function savingsButtons(){
+  return h('div',{class:'btnrow',style:{margin:'0 16px 16px'}},
+    h('button',{class:'btn',onClick:addToSavings},'Ahorrar'),
+    h('button',{class:'btn ghost',onClick:takeFromSavings},'Sacar'));
+}
+/* Tarjeta del Resumen */
+function savingsCard(){
+  const accs=savingsAccounts();
+  const p=curPeriod(),net=accs.length?savingsNet(p.start,p.end):0;
+  const box=h('div');
+  box.append(secTitle('Dinero ahorrado',accs.length?'Ver todo':null,accs.length?()=>openSavings():null));
+  if(!accs.length){
+    box.append(h('div',{class:'grp'},emptyBox('Tu hucha, aparte','Aparta cada mes lo que te sobre y míralo crecer. Si un mes lo necesitas, lo sacas y queda anotado.',
+      h('button',{class:'btn',onClick:addToSavings},'Empezar a ahorrar'))));
+    return box;
+  }
+  const tot=savingsTotal();
+  box.append(h('button',{class:'hero',style:{display:'block',width:'calc(100% - 32px)',textAlign:'left'},onClick:()=>openSavings()},
+    h('div',{class:'lbl'},'Dinero ahorrado'),
+    h('div',{class:'big'},money(tot)),
+    h('div',{class:'delta '+(net>0?'pos':net<0?'neg':'muted')},
+      net===0?'Este periodo no has movido la hucha':(net>0?'+':'−')+money(Math.abs(net))+' en '+periodLabel(p))));
+  box.append(savingsButtons());
+  return box;
+}
+/* Hoja completa, mes a mes */
+function openSavings(){
+  openSheet({title:'Dinero ahorrado',full:true,build:api=>{
+    const accs=savingsAccounts(),bal=balances(),box=h('div');
+    if(!accs.length)return h('div',null,h('div',{class:'grp'},emptyBox('Sin hucha todavía','Crea una y empieza a apartar lo que te sobre cada mes.',h('button',{class:'btn',onClick:async()=>{api.close();setTimeout(addToSavings,240)}},'Empezar a ahorrar'))));
+    box.append(h('div',{class:'hero'},h('div',{class:'lbl'},'Total ahorrado'),h('div',{class:'big'},money(savingsTotal()))));
+    box.append(savingsButtons());
+    if(accs.length>1||accs[0].currency!==main()){
+      box.append(groupHead('Dónde está'));
+      box.append(h('div',{class:'grp'},accs.map(a=>h('button',{class:'row',onClick:()=>{api.close();setTimeout(()=>openAccountDetail(a.id),240)}},tile(a.icon,a.color),
+        h('div',{class:'grow'},h('div',{class:'t'},a.name),h('div',{class:'s'},ACC_TYPES[a.type].n)),
+        h('div',{class:'amt'},money(bal[a.id]||0,a.currency))))));
+    }
+    const moves=savingsMoves();
+    if(!moves.length){
+      box.append(h('div',{class:'grp'},emptyBox('Aún no hay movimientos','Pulsa «Ahorrar» para apartar lo primero.')));
+      return box;
+    }
+    /* resumen de los últimos 6 meses */
+    const today=todayISO(),bars=[];
+    for(let i=5;i>=0;i--){
+      const m=addMonths(today.slice(0,8)+'01',-i),ini=m.slice(0,8)+'01',fin=addDays(addMonths(ini,1),-1);
+      bars.push({label:MONTHS[parseISO(ini).getMonth()].slice(0,3),v:savingsNet(ini,fin)});
+    }
+    const mx=Math.max(1,...bars.map(b=>Math.abs(b.v)));
+    box.append(h('div',{class:'card'},h('h3',null,'Últimos 6 meses'),
+      h('div',{style:{display:'flex',alignItems:'flex-end',gap:'8px',height:'92px',marginTop:'10px'}},bars.map(b=>h('div',{style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:'4px',height:'100%',justifyContent:'flex-end'}},
+        h('div',{class:'small num',style:{color:b.v<0?'var(--neg)':'var(--muted)'}},b.v?money(b.v,undefined,{int:true}):''),
+        h('div',{style:{width:'100%',height:Math.max(3,Math.round(Math.abs(b.v)/mx*52))+'px',borderRadius:'6px',background:b.v<0?'var(--neg)':'var(--pos)',opacity:b.v?1:.25}}),
+        h('div',{class:'small muted'},b.label))))));
+    /* mes a mes */
+    const byMonth={};
+    for(const x of moves){const k=x.t.date.slice(0,7);(byMonth[k]=byMonth[k]||[]).push(x)}
+    for(const k of Object.keys(byMonth).sort().reverse()){
+      const list=byMonth[k],net=list.reduce((s,x)=>s+x.v,0);
+      const d=parseISO(k+'-01');
+      box.append(groupHead(cap(MONTHS[d.getMonth()])+' '+d.getFullYear(),(net>=0?'+':'−')+money(Math.abs(net))));
+      box.append(h('div',{class:'grp'},list.map(x=>h('button',{class:'row',onClick:()=>{api.close();setTimeout(()=>openTxDetail(x.t.id),240)}},
+        tile(x.v>=0?'🐖':'↩︎',x.v>=0?'#0F8A5C':'#CF3640'),
+        h('div',{class:'grow'},h('div',{class:'t'},x.t.payee||(x.v>=0?'Ahorro':'Sacado del ahorro')),h('div',{class:'s'},fmtDay(x.t.date))),
+        h('div',{class:'amt '+(x.v>=0?'pos':'neg')},(x.v>=0?'+':'−')+money(Math.abs(x.v)))))));
+    }
+    return box;
+  }});
+}
+
 function budgetRow(b,i,onclick){
   const cls=i.pct>=1?' over':i.pct>.8?' warn':'';
   return h('button',{class:'row',onClick:onclick||(()=>openBudgetDetail(b.id))},tile(b.icon,b.kind==='total'?'#2748D9':cat(b.cats[0]).color),
