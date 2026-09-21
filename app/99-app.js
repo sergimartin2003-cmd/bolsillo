@@ -1756,7 +1756,8 @@ VIEWS.resumen=function(){
         h('div',{class:'muted small',style:{marginTop:'6px'}},'Hoy has gastado '+money(dl.today))));
     }
   }
-  // dinero ahorrado
+  // tu dinero y la hucha
+  box.append(myMoneyCard());
   box.append(savingsCard());
   // presupuestos
   if(S.budgets.length){
@@ -1790,6 +1791,56 @@ VIEWS.resumen=function(){
   if(rec.length){box.append(secTitle('Últimos movimientos','Ver todos',()=>go('movs')));box.append(h('div',{class:'grp'},rec.map(t=>txRow(t))))}
   return box;
 };
+/* ================= TODO MI DINERO =================
+   Suma del dinero que tienes a mano ahora mismo: efectivo, cuentas, ahorro y
+   otras. No entra lo invertido (no es dinero disponible) ni las deudas
+   (tarjetas y préstamos), que se ven aparte y ya cuentan en el patrimonio. */
+const LIQUID_TYPES=['cash','bank','savings','other'];
+const liquidAccounts=()=>activeAccounts().filter(a=>LIQUID_TYPES.indexOf(a.type)>-1);
+function sumAccounts(list){const b=balances();return list.reduce((s,a)=>s+conv(b[a.id]||0,a.currency,main()),0)}
+const liquidTotal=()=>sumAccounts(liquidAccounts());
+function myMoneyCard(){
+  const accs=liquidAccounts();
+  if(!accs.length)return h('div');
+  const tot=liquidTotal(),sav=savingsTotal();
+  const box=h('div');
+  box.append(secTitle('Tu dinero','Ver detalle',()=>openMyMoney()));
+  box.append(h('button',{class:'hero',style:{display:'block',width:'calc(100% - 32px)',textAlign:'left'},onClick:()=>openMyMoney()},
+    h('div',{class:'lbl'},'Tengo disponible'),
+    h('div',{class:'big'},money(tot)),
+    h('div',{class:'delta muted'},'En '+accs.length+(accs.length===1?' cuenta':' cuentas')+(sav?' · '+money(sav)+' en la hucha':''))));
+  return box;
+}
+function openMyMoney(){
+  openSheet({title:'Tu dinero',full:true,build:api=>{
+    const bal=balances(),box=h('div'),go2=id=>{api.close();setTimeout(()=>openAccountDetail(id),240)};
+    box.append(h('div',{class:'hero'},h('div',{class:'lbl'},'Tengo disponible'),h('div',{class:'big'},money(liquidTotal())),
+      h('div',{class:'delta muted'},'Efectivo, cuentas y ahorro. Sin contar lo invertido ni las deudas.')));
+    const row=a=>h('button',{class:'row',onClick:()=>go2(a.id)},tile(a.icon,a.color),
+      h('div',{class:'grow'},h('div',{class:'t'},a.name),h('div',{class:'s'},ACC_TYPES[a.type].n+(a.currency!==main()?' · '+a.currency:''))),
+      h('div',{class:'amt '+((bal[a.id]||0)<0?'neg':'')},money(bal[a.id]||0,a.currency),a.currency!==main()?h('small',null,'≈ '+money(conv(bal[a.id]||0,a.currency,main()))):null));
+    for(const t of LIQUID_TYPES){
+      const list=liquidAccounts().filter(a=>a.type===t);
+      if(!list.length)continue;
+      box.append(groupHead(ACC_TYPES[t].n,money(sumAccounts(list))));
+      box.append(h('div',{class:'grp'},list.map(row)));
+    }
+    const inv=activeAccounts().filter(a=>a.type==='invest'),deb=activeAccounts().filter(a=>a.type==='card'||a.type==='loan');
+    if(inv.length){
+      box.append(groupHead('Invertido (no disponible)',money(sumAccounts(inv))));
+      box.append(h('div',{class:'grp'},inv.map(row)));
+    }
+    if(deb.length){
+      box.append(groupHead('Lo que debes',money(sumAccounts(deb))));
+      box.append(h('div',{class:'grp'},deb.map(row)));
+    }
+    if(inv.length||deb.length){
+      box.append(h('div',{class:'callout'},'Sumando todo, tu patrimonio neto es ',h('b',null,money(netWorth())),'.'));
+    }
+    return box;
+  }});
+}
+
 /* ================= DINERO AHORRADO =================
    Se apoya en las cuentas de tipo "Ahorro": lo que ahorras es una transferencia
    hacia una de ellas y lo que sacas, una transferencia de vuelta. Así el saldo
