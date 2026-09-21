@@ -81,7 +81,31 @@ export default async function handler(req, res) {
         return;
       }
       const stockCurrency = (meta.currency || 'native').toLowerCase();
-      res.status(200).json({ ok: true, symbol, type, currency: stockCurrency, price, asOf: new Date().toISOString(), source: 'yahoo' });
+      const name = meta.longName || meta.shortName || null;
+
+      // Historial de dividendos (opcional, ?div=1): para acciones/ETFs de reparto,
+      // usado para calcular un pago recurrente estimado. Si falla, no rompe el precio.
+      let dividends = null;
+      if (req.query.div === '1') {
+        try {
+          const divUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ySymbol)}?range=2y&interval=1d&events=div`;
+          const dr = await fetch(divUrl, { headers: BROWSER_HEADERS });
+          if (dr.ok) {
+            const ddata = await dr.json();
+            const dresult = ddata && ddata.chart && Array.isArray(ddata.chart.result) ? ddata.chart.result[0] : null;
+            const divMap = dresult && dresult.events && dresult.events.dividends;
+            if (divMap && typeof divMap === 'object') {
+              dividends = Object.values(divMap)
+                .filter(d => d && d.amount > 0 && d.date)
+                .map(d => ({ date: new Date(d.date * 1000).toISOString().slice(0, 10), amount: d.amount }))
+                .sort((a, b) => (a.date < b.date ? 1 : -1))
+                .slice(0, 8);
+            }
+          }
+        } catch (divErr) { /* dividends queda null; el precio ya se respondió igual */ }
+      }
+
+      res.status(200).json({ ok: true, symbol, type, currency: stockCurrency, price, name, dividends, asOf: new Date().toISOString(), source: 'yahoo' });
       return;
     }
 

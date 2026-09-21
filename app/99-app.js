@@ -110,6 +110,13 @@ function migrate(state){
   t.settings.rates=Object.assign({},DEFAULT_RATES,t.settings.rates||{});
   for(const k of['accounts','categories','tx','recurring','budgets','budgetMoves','goals','shortcuts'])if(!Array.isArray(t[k]))t[k]=f[k];
   if(!t.memory)t.memory={};
+  for(const a of t.accounts){
+    if(a.type!=='invest')continue;
+    if(!Array.isArray(a.holdings)){
+      a.holdings=(a.symbol?[{id:uid(),symbol:a.symbol,assetType:a.assetType==='stock'?'stock':'crypto',qty:a.qty||1}]:[]);
+    }
+    delete a.symbol;delete a.assetType;delete a.qty;
+  }
   return t;
 }
 function loadState(){
@@ -853,7 +860,7 @@ function openTxForm(orig,defs,mode){
     pending:!!src.pending,excluded:!!src.excluded,
     photo:!!src.photo,newPhoto:null,removePhoto:false,
     freq:mode==='rec'?(src.freq||defs.freq||'monthly'):(defs.freq||''),
-    every:src.every||1,auto:src.auto!==false,end:src.end||''
+    every:src.every||defs.every||1,auto:src.auto!==false,end:src.end||''
   };
   if(F.type!=='transfer'&&F.cat&&cat(F.cat).type!==F.type&&cat(F.cat).id)F.cat='';
   if((F.type==='transfer'||F.type==='invest')&&!F.acc2){
@@ -945,13 +952,14 @@ function openTxForm(orig,defs,mode){
       g3.append(h('div',{class:'field'},h('span',{style:{flex:1}},'Excluir de informes'),switchEl(F.excluded,v=>{F.excluded=v})));
     }
     if((mode==='rec'||!isEdit)&&!(F.split&&mode==='tx')){
-      g3.append(fieldRow('Repetir',selectEl([{value:'',label:'No'}].concat(Object.keys(FREQ).map(k=>({value:k,label:FREQ[k]}))),F.freq,v=>{F.freq=v;draw()})));
+      g3.append(fieldRow('Repetir',selectEl([{value:'',label:'No'}].concat(Object.keys(FREQ).map(k=>({value:k,label:FREQ[k]}))),F.freq,v=>{F.freq=v;F.every=1;draw()})));
       if(F.freq&&mode==='rec'){
         g3.append(h('div',{class:'field'},h('span',{style:{flex:1}},'Registrar automáticamente'),switchEl(F.auto,v=>{F.auto=v})));
         g3.append(fieldRow('Hasta',h('input',{type:'date',value:F.end,onChange:e=>{F.end=e.target.value}})));
       }
     }
     if(g3.children.length)nodes.push(g3);
+    if(mode==='rec'&&F.freq==='monthly'&&F.every>1)nodes.push(h('p',{class:'muted small',style:{margin:'-6px 22px 14px'}},'Se repetirá cada '+F.every+' meses ('+(F.every===3?'trimestral':F.every===6?'semestral':F.every===12?'anual':F.every+' meses')+'), según el patrón detectado. Para cambiarlo a otro ritmo, elige una frecuencia distinta arriba.'));
     if(mode==='tx'&&Photos.ok()&&!isT){
       const g4=h('div',{class:'grp'});
       const prev=h('div');
@@ -1003,7 +1011,7 @@ function openTxForm(orig,defs,mode){
     if(isT){const B=acc(F.acc2);if(B&&B.currency!==A.currency){const v=parseNum(F.amount2);amount2=v>0?r2(v):r2(conv(amt,A.currency,B.currency))}}
     const splitsFinal=isSplit?F.splits.filter(s=>parseNum(s.amt)>0).map(s=>({cat:(s.cat&&cat(s.cat).type===F.type)?s.cat:(F.type==='income'?'c_otrosi':'c_otros'),amount:r2(parseNum(s.amt))})):null;
     if(mode==='rec'){
-      const r={id:isEdit?orig.id:uid(),type:storedType,amount:r2(amt),cur,acc:F.acc,acc2:isT?F.acc2:'',amount2:isT?amount2:null,cat:catId,payee:F.payee.trim(),tags,note:F.note.trim(),start:F.date,freq:F.freq||'monthly',every:1,auto:F.auto,end:F.end||'',n:isEdit?(orig.n||0):0,paused:isEdit?!!orig.paused:false};
+      const r={id:isEdit?orig.id:uid(),type:storedType,amount:r2(amt),cur,acc:F.acc,acc2:isT?F.acc2:'',amount2:isT?amount2:null,cat:catId,payee:F.payee.trim(),tags,note:F.note.trim(),start:F.date,freq:F.freq||'monthly',every:F.every||1,auto:F.auto,end:F.end||'',n:isEdit?(orig.n||0):0,paused:isEdit?!!orig.paused:false};
       if(isEdit)S.recurring=S.recurring.map(x=>x.id===r.id?r:x);else S.recurring.push(r);
       learn(r.payee,r.cat);LS.set('bolsillo.lastacc',F.acc);commit();sheet.close();toast(isEdit?'Cambios guardados':'Pago recurrente creado');return;
     }
@@ -1106,6 +1114,20 @@ function openAccountForm(a,onSaved){
   const F=a?clone(a):{id:uid(),name:'',type:'bank',currency:main(),initial:0,icon:'🏦',color:PALETTE[(S.accounts.length*3+1)%PALETTE.length],closing:'',due:'',limit:'',rate:'',term:'',payDay:''};
   let initStr=F.initial?String((F.type==='card'||F.type==='loan')?Math.abs(F.initial):F.initial).replace('.',','):'';
   const root=h('div');
+  const holdHints={},holdTimers={};
+  function scheduleHoldLookup(hd,hintEl,delay){
+    clearTimeout(holdTimers[hd.id]);
+    const sym=hd.symbol,type=hd.assetType||'crypto';
+    const canAuto=S.settings.priceApi&&S.settings.priceApi.url&&S.settings.priceApi.key;
+    if(!sym||!canAuto){hintEl.textContent='';return}
+    hintEl.textContent='Buscando…';
+    holdTimers[hd.id]=setTimeout(async()=>{
+      const r=await fetchPrice(sym,type,F.currency);
+      if(hd.symbol!==sym||(hd.assetType||'crypto')!==type)return; // el usuario cambió el símbolo/tipo mientras tanto
+      holdHints[hd.id]=r.ok?(r.name||''):'';
+      hintEl.textContent=holdHints[hd.id];
+    },delay==null?600:delay);
+  }
   function draw(){
     const isDebt=F.type==='card'||F.type==='loan';
     const g=h('div',{class:'grp'});
@@ -1136,14 +1158,24 @@ function openAccountForm(a,onSaved){
     if(F.type==='invest'){
       const g4=h('div',{class:'grp'});
       g4.append(fieldRow('Avisarme cada (días)',numInput(parseInt(F.checkDays,10)||30,1,365,v=>{F.checkDays=v})));
-      nodes.push(g4,h('p',{class:'muted small',style:{margin:'-6px 22px 14px'}},'En Resumen te avisaré cuando lleves más días que estos sin actualizar el valor.'));
+      nodes.push(g4,h('p',{class:'muted small',style:{margin:'-6px 22px 14px'}},'Cada este número de días, si tienes activos con símbolo, Bolsillo intentará consultar el precio solo al abrir la app. Si no puede, te avisará en Resumen para que lo hagas a mano.'));
+      if(!Array.isArray(F.holdings))F.holdings=[];
       const g5=h('div',{class:'grp'});
-      g5.append(fieldRow('Símbolo (opcional)',h('input',{type:'text',placeholder:'BTC, ETH, AAPL.US…',value:F.symbol||'',style:{textTransform:'uppercase'},onInput:e=>{F.symbol=e.target.value.toUpperCase()}})));
-      if(F.symbol){
-        g5.append(fieldRow('Tipo de activo',selectEl([{value:'crypto',label:'Cripto'},{value:'stock',label:'Acción / ETF'}],F.assetType||'crypto',v=>{F.assetType=v})));
-        g5.append(fieldRow('Unidades que tienes',h('input',{type:'text',inputmode:'decimal',placeholder:'1',value:F.qty!=null?String(F.qty).replace('.',','):'',onInput:e=>{F.qty=e.target.value}})));
-      }
-      nodes.push(g5,h('p',{class:'muted small',style:{margin:'-6px 22px 14px'}},'Con un símbolo y tu propia API de precios (Ajustes → Inversiones) podrás consultar el valor automáticamente al actualizar la cuenta, en vez de escribirlo a mano.'));
+      F.holdings.forEach((hd,i)=>{
+        const hintEl=h('div',{class:'muted small',style:{padding:'0 2px',minHeight:'15px'}},holdHints[hd.id]||'');
+        const symI=h('input',{type:'text',placeholder:'Símbolo: BTC, AAPL, VOO…',value:hd.symbol||'',style:{flex:1,minWidth:0,textTransform:'uppercase'},onInput:e=>{hd.symbol=e.target.value.toUpperCase();scheduleHoldLookup(hd,hintEl)}});
+        const typeSel=selectEl([{value:'crypto',label:'Cripto'},{value:'stock',label:'Acción/ETF'}],hd.assetType||'crypto',v=>{hd.assetType=v;scheduleHoldLookup(hd,hintEl,0)});
+        typeSel.style.flex='1';
+        const qtyI=h('input',{type:'text',inputmode:'decimal',placeholder:'Unidades',value:hd.qty!=null?String(hd.qty).replace('.',','):'',style:{width:'84px',textAlign:'right'},onInput:e=>{hd.qty=e.target.value}});
+        g5.append(h('div',{class:'row plain',style:{flexDirection:'column',alignItems:'stretch',gap:'6px'}},
+          h('div',{style:{display:'flex',gap:'8px',alignItems:'center'}},symI,
+            h('button',{class:'ibtn','aria-label':'Quitar activo',onClick:()=>{F.holdings.splice(i,1);draw()}},icon('close',16))),
+          h('div',{style:{display:'flex',gap:'8px'}},typeSel,qtyI),
+          hintEl));
+        if(hd.symbol&&holdHints[hd.id]===undefined)scheduleHoldLookup(hd,hintEl,0);
+      });
+      g5.append(h('button',{class:'row plain',onClick:()=>{F.holdings.push({id:uid(),symbol:'',assetType:'crypto',qty:''});draw()}},h('span',{class:'grow t',style:{color:'var(--accent)'}},'+ Añadir activo')));
+      nodes.push(g5,h('p',{class:'muted small',style:{margin:'-6px 22px 14px'}},'Opcional: añade cada activo que tengas en esta cuenta (símbolo + unidades). Con tu propia API de precios (Ajustes → Inversiones) podrás sumar el valor de todos automáticamente en vez de escribirlo a mano.'));
     }
     if(isEdit)nodes.push(h('div',{class:'grp'},h('div',{class:'field'},h('span',{style:{flex:1}},'Archivar cuenta'),switchEl(!!F.archived,v=>{F.archived=v}))));
     nodes.push(h('div',{class:'pad'},h('button',{class:'btn',onClick:doSave},'Guardar'),isEdit?h('div',{class:'btnrow'},h('button',{class:'btn danger',onClick:doDelete},'Eliminar cuenta')):null));
@@ -1165,9 +1197,11 @@ function openAccountForm(a,onSaved){
     if(F.type==='loan'){F.rate=F.rate===''?'':(parseNum(F.rate)||0);F.term=F.term===''?'':(parseInt(F.term,10)||'');F.payDay=F.payDay===''?'':(parseInt(F.payDay,10)||'')}
     if(F.type==='invest'){
       F.checkDays=parseInt(F.checkDays,10)||30;if(!F.lastCheck)F.lastCheck=todayISO();
-      F.symbol=(F.symbol||'').trim().toUpperCase();
-      if(F.symbol){F.assetType=F.assetType==='stock'?'stock':'crypto';const q=parseNum(F.qty);F.qty=q>0?q:1}
-      else{F.assetType='';F.qty=''}
+      F.holdings=(F.holdings||[]).map(hd=>{
+        const symbol=(hd.symbol||'').trim().toUpperCase();if(!symbol)return null;
+        const q=parseNum(hd.qty);
+        return{id:hd.id||uid(),symbol,assetType:hd.assetType==='stock'?'stock':'crypto',qty:q>0?q:1};
+      }).filter(Boolean);
     }
     if(isEdit)S.accounts=S.accounts.map(x=>x.id===F.id?F:x);else S.accounts.push(F);
     commit();sheet.close();if(onSaved)onSaved(F);toast(isEdit?'Cuenta actualizada':'Cuenta creada');
@@ -1393,11 +1427,30 @@ function investCheckInfo(a){
   return{days,last,since,stale:since>=days};
 }
 function staleInvestments(){return activeAccounts().filter(a=>a.type==='invest'&&investCheckInfo(a).stale)}
-async function fetchPrice(symbol,assetType){
+async function autoCheckInvestments(){
+  if(!S||S.settings.demo)return;
+  const targets=activeAccounts().filter(a=>a.type==='invest'&&(a.holdings||[]).length&&investCheckInfo(a).stale);
+  if(!targets.length||!S.settings.priceApi||!S.settings.priceApi.url||!S.settings.priceApi.key)return;
+  let changed=false,updated=0;
+  for(const a of targets){
+    let r;try{r=await fetchHoldingsValue(a)}catch(e){continue}
+    if(!r.ok)continue; // deja la cuenta como pendiente si falla algún activo; el usuario la revisa a mano
+    const curBal=balances()[a.id]||0,diff=r2(r.total-curBal);
+    a.lastCheck=todayISO();changed=true;updated++;
+    if(diff!==0){
+      const gain=diff>0;
+      S.tx.push({id:uid(),type:gain?'income':'expense',amount:Math.abs(diff),cur:a.currency,acc:a.id,acc2:'',amount2:null,cat:gain?'c_inv':'c_perdinv',payee:'',tags:[],note:'Ajuste de valor (automático)',date:todayISO(),pending:false,excluded:false,photo:false,ts:Date.now()});
+    }
+  }
+  if(changed){commit();if(updated===1)toast('Inversión actualizada automáticamente');else toast(updated+' cuentas de inversión actualizadas automáticamente')}
+}
+async function fetchPrice(symbol,assetType,curHint,opts){
   const api=S.settings.priceApi;
   if(!api||!api.url||!api.key)return{ok:false,error:'API de precios no configurada'};
   if(!symbol)return{ok:false,error:'Falta el símbolo'};
-  const url=api.url.replace(/\/+$/,'')+'/api/price?symbol='+encodeURIComponent(symbol)+'&type='+encodeURIComponent(assetType||'crypto')+'&currency='+encodeURIComponent((main()||'EUR').toLowerCase());
+  const cur=(curHint||main()||'EUR');
+  let url=api.url.replace(/\/+$/,'')+'/api/price?symbol='+encodeURIComponent(symbol)+'&type='+encodeURIComponent(assetType||'crypto')+'&currency='+encodeURIComponent(cur.toLowerCase());
+  if(opts&&opts.div)url+='&div=1';
   let r,data;
   try{
     r=await fetch(url,{headers:{'x-api-key':api.key}});
@@ -1407,7 +1460,42 @@ async function fetchPrice(symbol,assetType){
   }
   if(!r.ok||!data||data.ok===false)return{ok:false,error:(data&&data.error)||('Error del servidor ('+r.status+')')};
   if(!(data.price>0))return{ok:false,error:'La API no devolvió un precio válido'};
-  return{ok:true,price:data.price,currency:data.currency,asOf:data.asOf||new Date().toISOString()};
+  // Las acciones/ETFs devuelven el precio en su divisa nativa (ignoran ?currency=), no en `cur`.
+  // Convertimos siempre con la divisa que diga la API, nunca asumimos que ya coincide.
+  return{ok:true,price:data.price,currency:(data.currency||cur).toUpperCase(),name:data.name||null,dividends:Array.isArray(data.dividends)?data.dividends:null,asOf:data.asOf||new Date().toISOString()};
+}
+// A partir del historial de dividendos (más reciente primero), estima cada cuántos meses
+// se reparte («every», usado con freq:'monthly' en pagos recurrentes: every=3 → trimestral,
+// every=6 → semestral, every=12 → anual) y calcula la próxima fecha futura de pago.
+function inferDividendPlan(dividends){
+  if(!Array.isArray(dividends)||dividends.length<1)return null;
+  const sorted=[...dividends].sort((a,b)=>a.date<b.date?1:-1); // más reciente primero
+  const last=sorted[0];
+  let every=12; // sin suficiente historial, asumimos anual (la opción más conservadora)
+  if(sorted.length>=2){
+    const gaps=[];
+    for(let i=0;i<Math.min(sorted.length-1,4);i++)gaps.push(diffDays(sorted[i+1].date,sorted[i].date));
+    const avg=gaps.reduce((s,x)=>s+x,0)/gaps.length;
+    every=avg<=45?1:avg<=135?3:avg<=270?6:12;
+  }
+  const label={1:'mensual',3:'trimestral',6:'semestral',12:'anual'}[every];
+  let next=addMonths(last.date,every),today=todayISO();
+  while(next<=today)next=addMonths(next,every);
+  return{last,every,label,next,perShare:last.amount};
+}
+async function fetchHoldingsValue(a){
+  const list=a.holdings||[];
+  if(!list.length)return{ok:false,error:'Esta cuenta no tiene activos con símbolo'};
+  const details=await Promise.all(list.map(async hd=>{
+    const r=await fetchPrice(hd.symbol,hd.assetType||'crypto',a.currency);
+    if(!r.ok)return{holding:hd,ok:false,error:r.error};
+    const qty=parseNum(hd.qty)||0;
+    const valueAcc=r2(conv(r.price,r.currency,a.currency)*qty);
+    return{holding:hd,ok:true,price:r.price,priceCur:r.currency,name:r.name,qty,valueAcc,asOf:r.asOf};
+  }));
+  const okAll=details.every(x=>x.ok);
+  const total=r2(details.reduce((s,x)=>s+(x.ok?x.valueAcc:0),0));
+  return{ok:okAll,total,details,asOf:new Date().toISOString()};
 }
 function openPriceApiSettings(parentApi){
   const cur=S.settings.priceApi||{};
@@ -1926,6 +2014,10 @@ function openAccountDetail(id){
       g.append(h('div',{class:'row plain'},h('span',{class:'muted'},'Aviso cada'),h('div',{class:'grow',style:{textAlign:'right'}},ci.days+' días')));
       nodes.push(g);
       nodes.push(h('div',{class:'btnrow',style:{padding:'0 16px 6px'}},h('button',{class:'btn ghost',onClick:()=>openInvestUpdate(a,api)},'Actualizar valor'),h('button',{class:'btn ghost',onClick:()=>openInvestContribute(a.id)},'Aportar')));
+      const stockHoldings=(a.holdings||[]).filter(hd=>hd.assetType==='stock');
+      const divBtns=[h('button',{class:'btn ghost',onClick:()=>openTxForm(null,{type:'income',acc:a.id,cur:a.currency,cat:'c_inv',payee:'',note:''})},'Registrar ingreso (dividendo, interés…)')];
+      if(stockHoldings.length)divBtns.push(h('button',{class:'btn ghost',onClick:()=>openDividendScan(a)},'Detectar dividendos'));
+      nodes.push(h('div',{class:'btnrow',style:{padding:'0 16px 6px'}},divBtns));
     }
     nodes.push(h('div',{class:'btnrow',style:{padding:'0 16px 14px'}},h('button',{class:'btn ghost',onClick:()=>openTxForm(null,{acc:id,cur:a.currency})},'Añadir movimiento'),h('button',{class:'btn ghost',onClick:()=>openAccountForm(a)},'Editar')));
     nodes.push(secTitle('Movimientos'));
@@ -1933,28 +2025,70 @@ function openAccountDetail(id){
     return h('div',null,nodes);
   }});
 }
+function openDividendScan(a){
+  const holdings=(a.holdings||[]).filter(hd=>hd.assetType==='stock'&&hd.symbol);
+  const canAuto=S.settings.priceApi&&S.settings.priceApi.url&&S.settings.priceApi.key;
+  let results=null,loading=false,loaded=false;
+  openSheet({title:'Dividendos',full:true,build:api=>{
+    const nodes=[h('p',{class:'muted small',style:{margin:'4px 22px 12px'}},'Busca el historial real de dividendos de cada acción/ETF de «'+a.name+'» (fuente: Yahoo Finance) y te propone un pago recurrente ya calculado con tus unidades, para no tener que ir añadiéndolos a mano. Solo encontrará algo en activos que reparten en efectivo — un fondo de acumulación no tiene nada que mostrar aquí, se reinvierte solo.')];
+    if(!canAuto){nodes.push(h('div',{class:'grp'},emptyBox('Falta la API de precios','Configúrala en Ajustes → Inversiones para poder consultar el historial.')));return h('div',null,nodes)}
+    if(!holdings.length){nodes.push(h('div',{class:'grp'},emptyBox('Sin acciones/ETF en esta cuenta','Añade alguna en Editar cuenta (como tipo «Acción/ETF»).')));return h('div',null,nodes)}
+    if(!loaded){
+      nodes.push(h('div',{class:'pad'},h('button',{class:'btn ghost',disabled:loading,onClick:async()=>{
+        loading=true;api.refresh();
+        results=await Promise.all(holdings.map(async hd=>{
+          const r=await fetchPrice(hd.symbol,'stock',a.currency,{div:true});
+          if(!r.ok)return{holding:hd,ok:false,error:r.error};
+          const plan=inferDividendPlan(r.dividends);
+          if(!plan)return{holding:hd,ok:true,plan:null};
+          const qty=parseNum(hd.qty)||0;
+          const perPaymentAcc=r2(conv(r2(plan.perShare*qty),r.currency,a.currency));
+          return{holding:hd,ok:true,plan,priceCur:r.currency,perPaymentAcc};
+        }));
+        loading=false;loaded=true;api.refresh();
+      }},loading?'Buscando…':'Buscar dividendos ('+holdings.length+(holdings.length===1?' activo':' activos')+')')));
+    }else{
+      nodes.push(h('div',{class:'grp'},results.map(x=>{
+        const hd=x.holding;
+        if(!x.ok)return h('div',{class:'row plain'},h('span',{class:'grow t'},hd.symbol),h('span',{class:'s'},x.error));
+        if(!x.plan)return h('div',{class:'row plain'},h('span',{class:'grow t'},hd.symbol),h('span',{class:'s'},'Sin repartos recientes (¿de acumulación?)'));
+        const already=S.recurring.some(r=>r.acc===a.id&&r.payee===hd.symbol+' · dividendo'&&!r.paused);
+        return h('div',{class:'row plain',style:{flexDirection:'column',alignItems:'stretch',gap:'4px'}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',gap:'8px'}},h('span',{class:'t'},hd.symbol),h('span',{class:'amt'},money(x.perPaymentAcc,a.currency,{force:true}))),
+          h('div',{class:'s'},'Último reparto: '+fmtShort(x.plan.last.date)+' · '+num(x.plan.perShare,4)+' '+x.priceCur+'/ud · patrón '+x.plan.label),
+          already?h('div',{class:'s pos'},'Ya tienes un pago recurrente para este activo'):h('button',{class:'link',style:{textAlign:'left',marginTop:'2px'},onClick:()=>{
+            closeAllSheets();
+            setTimeout(()=>openTxForm(null,{type:'income',acc:a.id,cur:a.currency,cat:'c_inv',payee:hd.symbol+' · dividendo',note:'Estimado a partir del historial de '+hd.symbol,amount:x.perPaymentAcc,date:x.plan.next,freq:'monthly',every:x.plan.every},'rec'),240);
+          }},'Crear pago recurrente'));
+      })));
+      nodes.push(h('div',{class:'pad'},h('button',{class:'btn ghost',onClick:()=>{loaded=false;results=null;api.refresh()}},'Volver a buscar')));
+    }
+    return h('div',null,nodes);
+  }});
+}
 function openInvestUpdate(a,parentApi){
   const curBal=balances()[a.id]||0;
   let val=curBal?num(curBal):'';
-  let fetchMsg='',fetching=false;
+  let fetchMsg='',fetching=false,details=null;
   openSheet({title:'Actualizar valor',form:true,build:api=>{
     const inp=h('input',{type:'text',inputmode:'decimal',placeholder:'0,00',value:val,style:{textAlign:'right'},onInput:e=>{val=e.target.value}});
-    const canAuto=a.symbol&&S.settings.priceApi&&S.settings.priceApi.url&&S.settings.priceApi.key;
+    const holdings=a.holdings||[];
+    const canAuto=holdings.length&&S.settings.priceApi&&S.settings.priceApi.url&&S.settings.priceApi.key;
     const nodes=[h('p',{class:'muted small',style:{margin:'4px 22px 12px'}},'Indica el valor actual de «'+a.name+'». Se registra la diferencia con el saldo actual ('+money(curBal,a.currency,{force:true})+') como un movimiento de inversión, sin tocar el resto de cuentas.')];
     if(canAuto){
       nodes.push(h('div',{class:'pad',style:{paddingBottom:0}},h('button',{class:'btn ghost',disabled:fetching,onClick:async()=>{
-        fetching=true;fetchMsg='Consultando '+a.symbol+'…';api.refresh();
-        const r=await fetchPrice(a.symbol,a.assetType||'crypto');
-        fetching=false;
-        if(!r.ok){fetchMsg=r.error;api.refresh();return}
-        const qty=parseNum(a.qty)||1;
-        val=String(r2(r.price*qty)).replace('.',',');
-        fetchMsg='Precio '+a.symbol+': '+num(r.price)+' × '+num(qty)+' uds. · '+new Date(r.asOf).toLocaleString('es-ES',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
+        fetching=true;fetchMsg='Consultando '+holdings.length+(holdings.length===1?' activo…':' activos…');api.refresh();
+        const r=await fetchHoldingsValue(a);
+        fetching=false;details=r.details;
+        if(!r.details.some(x=>x.ok)){fetchMsg='No se pudo consultar ningún precio: '+r.details.map(x=>x.holding.symbol+' ('+x.error+')').join(', ');api.refresh();return}
+        val=String(r.total).replace('.',',');
+        fetchMsg=r.ok?'Consultado a las '+new Date(r.asOf).toLocaleString('es-ES',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}):'Consultado parcialmente — fallaron: '+r.details.filter(x=>!x.ok).map(x=>x.holding.symbol+' ('+x.error+')').join(', ');
         api.refresh();
-      }},fetching?'Consultando…':'Consultar precio ('+a.symbol+')')));
+      }},fetching?'Consultando…':'Consultar precios ('+holdings.length+(holdings.length===1?' activo':' activos')+')')));
       if(fetchMsg)nodes.push(h('p',{class:'muted small',style:{margin:'8px 22px 0'}},fetchMsg));
-    }else if(a.symbol){
-      nodes.push(h('p',{class:'muted small',style:{margin:'-6px 22px 12px'}},'Tiene símbolo («'+a.symbol+'») pero no hay ninguna API de precios conectada — configúrala en Ajustes → Inversiones para consultar el precio automáticamente.'));
+      if(details&&details.some(x=>x.ok))nodes.push(h('div',{class:'grp tight',style:{margin:'10px 16px'}},details.map(d=>h('div',{class:'row plain'},h('div',{class:'grow'},h('div',{class:'t'},d.holding.symbol),d.ok&&d.name?h('div',{class:'s'},d.name):null),h('span',{class:'s'},d.ok?(num(d.qty)+' × '+num(d.price)+' '+d.priceCur):d.error),d.ok?h('span',{class:'amt'},money(d.valueAcc,a.currency,{force:true})):null))));
+    }else if(holdings.length){
+      nodes.push(h('p',{class:'muted small',style:{margin:'-6px 22px 12px'}},'Tiene '+holdings.length+' activo(s) con símbolo pero no hay ninguna API de precios conectada — configúrala en Ajustes → Inversiones para sumar su valor automáticamente.'));
     }
     nodes.push(h('div',{class:'grp'},fieldRow('Valor actual',inp)));
     nodes.push(h('div',{class:'pad'},h('button',{class:'btn',onClick:()=>{
@@ -2923,4 +3057,5 @@ function openOnboarding(){
   renderAll();
   await gateP;
   if(!S.settings.onboarded&&!S.tx.length&&!S.settings.demo)setTimeout(openOnboarding,350);
+  setTimeout(()=>{autoCheckInvestments().catch(()=>{})},900);
 })();
