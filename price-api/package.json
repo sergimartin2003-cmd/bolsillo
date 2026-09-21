@@ -1,0 +1,7 @@
+{
+  "name": "bolsillo-price-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "API mínima en Vercel Functions para servir precios de cripto (CoinGecko) y acciones/ETFs (Stooq) a Bolsillo, protegida con una clave."
+}
